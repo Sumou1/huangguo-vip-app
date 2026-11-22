@@ -1,7 +1,16 @@
 pluginManagement {
-    def flutterSdkPath = new File("/vol1/@appshare/octop-native/data/.octop/agents/alan/flutter-sdk").getAbsolutePath()
-    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+    def flutterSdkPath = {
+        def properties = new Properties()
+        def localProperties = new File(rootDir, "local.properties")
+        if (localProperties.exists()) {
+            localProperties.withInputStream { properties.load(it) }
+        }
+        def sdkPath = properties.getProperty("flutter.sdk")
+        assert sdkPath != null, "flutter.sdk not set in local.properties"
+        return sdkPath
+    }()
 
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
     repositories {
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
