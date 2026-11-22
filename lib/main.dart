@@ -368,7 +368,7 @@ class _DetailPageState extends State<DetailPage> {
 
     try {
       final response = await http.get(
-        Uri.parse('https://huangguoai.com/video/${widget.dramaId}/'),
+        Uri.parse('https://ctb09.ir95e08v.cc/video/${widget.dramaId}/'),
         headers: {
           'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
         },
