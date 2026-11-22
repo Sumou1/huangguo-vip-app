@@ -12,22 +12,27 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.3'
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
           channel: stable
           cache: true
 
-      - run: flutter --version
       - run: flutter pub get
+
+      - name: 生成 gradle wrapper
+        run: cd android && gradle wrapper --gradle-version 8.3
+
       - run: flutter build apk --release
 
       - run: find . -name "*.apk" -type f
         if: always()
+
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: apk
-          path: |
-            build/app/outputs/**/*.apk
-            android/app/build/outputs/**/*.apk
+          path: build/app/outputs/flutter-apk/*.apk
