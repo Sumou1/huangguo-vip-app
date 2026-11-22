@@ -25,14 +25,24 @@ jobs:
       - run: flutter pub get
 
       - name: 生成 gradle wrapper
-        run: cd android && gradle wrapper --gradle-version 8.3
+        working-directory: android
+        run: gradle wrapper --gradle-version 8.3
 
-      - run: flutter build apk --release
+      - name: 构建 Release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
 
-      - run: find . -name "*.apk" -type f
+      - name: 查看 APK 位置
         if: always()
+        run: find . -name "*.apk" -type f
 
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            android/app/build/outputs/flutter-apk/*.apk
+            android/app/build/outputs/apk/release/*.apk
+            build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
