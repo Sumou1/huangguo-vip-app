@@ -4,6 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+
+const List<String> _siteBases = [
+  'https://huangguoai.com',
+  'https://ctb09.ir95e08v.cc',
+];
 
 void main() {
   runApp(const HuangguoVIPApp());
@@ -42,9 +48,7 @@ class _HomePageState extends State<HomePage> {
   String _filterSort = 'hot';
   bool _isVIP = true;
 
-  final List<String> _apiBases = [
-    'https://ctb09.ir95e08v.cc',
-  ];
+  final List<String> _apiBases = _siteBases;
 
   @override
   void initState() {
@@ -95,7 +99,7 @@ class _HomePageState extends State<HomePage> {
                     'title': item['title'] ?? '',
                     'cover': item['cover'] ?? '',
                     'score': (item['score'] ?? 0).toDouble(),
-                    'episodes': item['episode_count'] ?? 1,
+                    'episodes': item['episode_count'] ?? item['total_episodes'] ?? 1,
                     'isFinished': item['is_finished'] == true || item['is_finished'] == 1,
                     'tags': item['tags'] ?? [],
                     'desc': item['description'] ?? '',
@@ -187,7 +191,11 @@ class _HomePageState extends State<HomePage> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => DetailPage(dramaId: drama['id']),
+                      builder: (context) => DetailPage(
+                        dramaId: drama['id'],
+                        episodeCount: int.tryParse('${drama['episodes']}'),
+                        isFinished: drama['isFinished'] as bool?,
+                      ),
                     ),
                   ),
                 );
@@ -293,6 +301,10 @@ class DramaCard extends StatelessWidget {
               child: Image.network(
                 drama['cover'],
                 fit: BoxFit.cover,
+                headers: const {
+                  'Referer': 'https://huangguoai.com/',
+                  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+                },
                 errorBuilder: (context, error, stackTrace) {
                   return Container(
                     color: Colors.grey[800],
@@ -345,8 +357,15 @@ class DramaCard extends StatelessWidget {
 
 class DetailPage extends StatefulWidget {
   final int dramaId;
+  final int? episodeCount;
+  final bool? isFinished;
 
-  const DetailPage({super.key, required this.dramaId});
+  const DetailPage({
+    super.key,
+    required this.dramaId,
+    this.episodeCount,
+    this.isFinished,
+  });
 
   @override
   State<DetailPage> createState() => _DetailPageState();
@@ -366,52 +385,81 @@ class _DetailPageState extends State<DetailPage> {
   Future<void> _loadDetail() async {
     setState(() => _loading = true);
 
-    try {
-      final response = await http.get(
-        Uri.parse('https://ctb09.ir95e08v.cc/video/${widget.dramaId}/'),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-        },
-      ).timeout(const Duration(seconds: 10));
+    for (final siteBase in _siteBases) {
+      try {
+        final response = await http.get(
+          Uri.parse('$siteBase/video/${widget.dramaId}/'),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Referer': '$siteBase/',
+          },
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode != 200) continue;
 
-      if (response.statusCode == 200) {
-        final html = response.body;
         final match = RegExp(r'<script[^>]*id="videoInitialData"[^>]*>(.*?)</script>')
-            .firstMatch(html);
-        if (match != null) {
-          final jsonStr = match.group(1)!;
-          final data = json.decode(jsonStr);
-          final tracking = data['tracking'] as Map<String, dynamic>?;
-          final totalEp = tracking?['total_episode'] ?? 1;
-          final epPlaySrcs = data['epPlaySrcs'] as Map<String, dynamic>?;
-          final availableEps = epPlaySrcs?.keys.length ?? 0;
-          final isFinished = availableEps >= totalEp || data['is_finished'] == true;
+            .firstMatch(response.body);
+        if (match == null) continue;
 
-          setState(() {
-            _drama = {
-              'id': widget.dramaId,
-              'title': data['title'] ?? '',
-              'cover': data['posterSrc'] ?? '',
-              'desc': data['description'] ?? '',
-              'tags': data['tags'] ?? [],
-              'totalEpisodes': totalEp,
-              'availableEpisodes': availableEps,
-              'isFinished': isFinished,
-              'epPlaySrcs': epPlaySrcs ?? {},
-              'score': data['score'] ?? 0,
-            };
-            _episodes = (epPlaySrcs?.keys ?? [])
-                .map((e) => int.parse(e.toString()))
-                .toList()
-              ..sort();
-            _loading = false;
-          });
+        final data = json.decode(match.group(1)!) as Map<String, dynamic>;
+        final tracking = data['tracking'] as Map<String, dynamic>?;
+        final rawTrackingEpisodes = data['trackingEpisodes'];
+        final trackingEpisodes = rawTrackingEpisodes is Map
+            ? Map<String, dynamic>.from(rawTrackingEpisodes)
+            : <String, dynamic>{};
+        final rawSources = data['epPlaySrcs'];
+        final epPlaySrcs = rawSources is Map
+            ? Map<String, dynamic>.from(rawSources)
+            : <String, dynamic>{};
+        final totalEp = int.tryParse(
+              '${tracking?['total_episode'] ?? data['total_episode'] ?? widget.episodeCount ?? trackingEpisodes.length}',
+            ) ??
+            widget.episodeCount ??
+            trackingEpisodes.length;
+        final sourceEpisodes = epPlaySrcs.keys
+            .map((key) => int.tryParse(key.toString()))
+            .whereType<int>()
+            .toSet();
+        final episodesFromTracking = trackingEpisodes.keys
+            .map((key) => int.tryParse(key.toString()))
+            .whereType<int>()
+            .toSet();
+        final episodes = (sourceEpisodes.isNotEmpty
+                ? sourceEpisodes
+                : episodesFromTracking)
+            .toList()
+          ..sort();
+        if (episodes.isEmpty && totalEp > 0) {
+          episodes.addAll(
+            List<int>.generate(totalEp.clamp(0, 500).toInt(), (i) => i + 1),
+          );
         }
+
+        if (!mounted) return;
+        setState(() {
+          _drama = {
+            'id': widget.dramaId,
+            'siteBase': siteBase,
+            'title': data['title'] ?? '',
+            'cover': data['posterSrc'] ?? data['coverSrc'] ?? '',
+            'desc': data['description'] ?? '',
+            'tags': data['tags'] ?? [],
+            'totalEpisodes': totalEp,
+            'availableEpisodes': episodes.length,
+            'isFinished': widget.isFinished ??
+                (data['is_finished'] == true || data['is_finished'] == 1),
+            'epPlaySrcs': epPlaySrcs,
+            'score': data['score'] ?? 0,
+          };
+          _episodes = episodes;
+          _loading = false;
+        });
+        return;
+      } catch (e) {
+        debugPrint('Detail load failed for $siteBase: $e');
       }
-    } catch (e) {
-      print('Detail error: $e');
-      setState(() => _loading = false);
     }
+
+    if (mounted) setState(() => _loading = false);
   }
 
   @override
@@ -428,7 +476,14 @@ class _DetailPageState extends State<DetailPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Image.network(_drama!['cover']),
+                      Image.network(
+                        _drama!['cover'],
+                        headers: const {
+                          'Referer': 'https://huangguoai.com/',
+                          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+                        },
+                        errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+                      ),
                       Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -485,6 +540,7 @@ class _DetailPageState extends State<DetailPage> {
                                             builder: (context) => PlayerPage(
                                               dramaId: widget.dramaId,
                                               episode: ep,
+                                              episodes: _episodes,
                                               epPlaySrcs: _drama!['epPlaySrcs'],
                                               dramaTitle: _drama!['title'],
                                             ),
@@ -507,6 +563,7 @@ class _DetailPageState extends State<DetailPage> {
 class PlayerPage extends StatefulWidget {
   final int dramaId;
   final int episode;
+  final List<int> episodes;
   final Map<String, dynamic> epPlaySrcs;
   final String dramaTitle;
 
@@ -514,6 +571,7 @@ class PlayerPage extends StatefulWidget {
     super.key,
     required this.dramaId,
     required this.episode,
+    required this.episodes,
     required this.epPlaySrcs,
     required this.dramaTitle,
   });
@@ -524,112 +582,420 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage> {
   VideoPlayerController? _controller;
+  WebViewController? _webViewController;
   bool _loading = true;
+  String? _errorMessage;
+  double _playbackSpeed = 1;
   Timer? _timer;
+
+  int get _episodeIndex => widget.episodes.indexOf(widget.episode);
+  bool get _hasPreviousEpisode => _episodeIndex > 0;
+  bool get _hasNextEpisode =>
+      _episodeIndex >= 0 && _episodeIndex < widget.episodes.length - 1;
 
   @override
   void initState() {
     super.initState();
-    _initPlayer();
-    _startProgressTimer();
-  }
-
-  Future<void> _initPlayer() async {
-    final videoUrl = widget.epPlaySrcs[widget.episode.toString()] as String?;
-    if (videoUrl == null) {
-      setState(() => _loading = false);
-      return;
-    }
-
-    _controller = VideoPlayerController.networkUrl(Uri.parse(videoUrl));
-    await _controller!.initialize();
-    await _controller!.play();
-
-    // 恢复上次进度
-    final prefs = await SharedPreferences.getInstance();
-    final savedTime = prefs.getDouble('progress_${widget.dramaId}_${widget.episode}');
-    if (savedTime != null && savedTime > 0) {
-      _controller!.seekTo(Duration(seconds: savedTime.toInt()));
-    }
-
-    setState(() => _loading = false);
-  }
-
-  void _startProgressTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (_controller != null && _controller!.value.isInitialized) {
-        _saveProgress();
-      }
+    _initializePlayer();
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      unawaited(_saveProgress());
     });
   }
 
+  Uri? _videoUri() {
+    final source = widget.epPlaySrcs[widget.episode.toString()];
+    String? sourceUrl;
+    if (source is String) {
+      sourceUrl = source;
+    } else if (source is Map) {
+      sourceUrl = (source['url'] ?? source['src'] ?? source['file'])?.toString();
+    } else if (source is List) {
+      sourceUrl = source
+          .whereType<String>()
+          .cast<String?>()
+          .firstWhere(
+            (value) => value != null && value.trim().isNotEmpty,
+            orElse: () => null,
+          );
+    }
+    if (sourceUrl == null || sourceUrl.trim().isEmpty) return null;
+    final parsed = Uri.tryParse(sourceUrl.trim().replaceAll('&amp;', '&'));
+    if (parsed == null) return null;
+    final uri = parsed.hasScheme
+        ? parsed
+        : Uri.parse(_siteBases.first).resolveUri(parsed);
+    if ((uri.scheme != 'http' && uri.scheme != 'https') || uri.host.isEmpty) {
+      return null;
+    }
+    return uri;
+  }
+
+  Future<void> _initializePlayer() async {
+    if (!mounted) return;
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+      _webViewController = null;
+    });
+
+    final oldController = _controller;
+    _controller = null;
+    await oldController?.dispose();
+
+    final uri = _videoUri();
+    if (uri == null) {
+      await _enableWebPlaybackFallback();
+      return;
+    }
+
+    final controller = VideoPlayerController.networkUrl(
+      uri,
+      httpHeaders: const {
+        'User-Agent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Referer': 'https://huangguoai.com/',
+      },
+    );
+    _controller = controller;
+
+    try {
+      await controller.initialize();
+      if (!mounted || !identical(_controller, controller)) {
+        await controller.dispose();
+        return;
+      }
+      final prefs = await SharedPreferences.getInstance();
+      final savedSeconds = prefs.getDouble(
+        'progress_${widget.dramaId}_${widget.episode}',
+      );
+      if (savedSeconds != null && savedSeconds > 0) {
+        final resumeAt = Duration(seconds: savedSeconds.floor());
+        final duration = controller.value.duration;
+        await controller.seekTo(
+          duration > Duration.zero && resumeAt > duration ? duration : resumeAt,
+        );
+      }
+      await controller.play();
+      if (mounted && identical(_controller, controller)) {
+        setState(() => _loading = false);
+      }
+    } catch (error) {
+      debugPrint('Player initialization failed: $error');
+      await controller.dispose();
+      if (mounted && identical(_controller, controller)) {
+        _controller = null;
+        await _enableWebPlaybackFallback();
+      }
+    }
+  }
+
+  Future<void> _enableWebPlaybackFallback() async {
+    final siteBase = _siteBases.first;
+    final episodePath = widget.episode <= 1
+        ? '/video/${widget.dramaId}/'
+        : '/video/${widget.dramaId}/ep-${widget.episode}/';
+    try {
+      final webController = WebViewController();
+      await webController.setJavaScriptMode(JavaScriptMode.unrestricted);
+      await webController.setBackgroundColor(Colors.black);
+      await webController.setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (_) async {
+            try {
+              await webController.runJavaScript('''
+                  (() => {
+                    const style = document.createElement('style');
+                    style.textContent = `
+                      html, body { margin: 0 !important; height: 100% !important; background: #000 !important; overflow: hidden !important; }
+                      body * { visibility: hidden !important; }
+                      .hg-web-play { visibility: visible !important; position: fixed !important; inset: 0 !important; z-index: 2147483647 !important; width: 100vw !important; height: 100vh !important; margin: 0 !important; padding: 0 !important; }
+                      .hg-web-play * { visibility: visible !important; }
+                      .hg-web-play__viewport { width: 100% !important; height: 100% !important; }
+                    `;
+                    document.head.appendChild(style);
+                  })();
+                ''');
+            } catch (_) {}
+          },
+          onNavigationRequest: (request) {
+            final host = Uri.tryParse(request.url)?.host ?? '';
+            return host == 'huangguoai.com' || host == 'ctb09.ir95e08v.cc'
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent;
+          },
+        ),
+      );
+      await webController.loadRequest(Uri.parse('$siteBase$episodePath'));
+      if (!mounted) return;
+      setState(() {
+        _webViewController = webController;
+        _loading = false;
+        _errorMessage = null;
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('last_drama_id', widget.dramaId);
+      await prefs.setInt('last_episode', widget.episode);
+    } catch (error) {
+      debugPrint('Web playback fallback failed: $error');
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _errorMessage = '播放页加载失败，请检查网络后重试';
+        });
+      }
+    }
+  }
+
   Future<void> _saveProgress() async {
-    if (_controller != null) {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    final seconds = controller.value.position.inSeconds.toDouble();
+    try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble(
         'progress_${widget.dramaId}_${widget.episode}',
-        _controller!.value.position.inSeconds.toDouble(),
+        seconds,
       );
       await prefs.setInt('last_drama_id', widget.dramaId);
       await prefs.setInt('last_episode', widget.episode);
+    } catch (error) {
+      debugPrint('Unable to save playback progress: $error');
     }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    unawaited(_saveProgress());
     _controller?.dispose();
     super.dispose();
+  }
+
+  Future<void> _seekBy(Duration offset) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    final position = controller.value.position + offset;
+    final duration = controller.value.duration;
+    final target = position < Duration.zero
+        ? Duration.zero
+        : (duration > Duration.zero && position > duration ? duration : position);
+    await controller.seekTo(target);
+  }
+
+  Future<void> _togglePlayback() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isPlaying) {
+      await controller.pause();
+    } else {
+      await controller.play();
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _openEpisode(int episode) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PlayerPage(
+          dramaId: widget.dramaId,
+          episode: episode,
+          episodes: widget.episodes,
+          epPlaySrcs: widget.epPlaySrcs,
+          dramaTitle: widget.dramaTitle,
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int value) => value.toString().padLeft(2, '0');
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    return hours > 0
+        ? '${twoDigits(hours)}:${twoDigits(minutes)}:${twoDigits(seconds)}'
+        : '${twoDigits(minutes)}:${twoDigits(seconds)}';
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.dramaTitle} - 第${widget.episode}集'),
+        title: Text('${widget.dramaTitle} · 第 ${widget.episode} 集'),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                AspectRatio(
-                  aspectRatio: _controller!.value.aspectRatio,
-                  child: VideoPlayer(_controller!),
-                ),
-                VideoProgressIndicator(_controller!, allowScrubbing: true),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.replay_10),
-                      onPressed: () => _controller!.seekTo(
-                        _controller!.value.position - const Duration(seconds: 10),
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(_controller!.value.isPlaying ? Icons.pause : Icons.play_arrow),
-                      onPressed: () {
-                        setState(() {
-                          _controller!.value.isPlaying
-                              ? _controller!.pause()
-                              : _controller!.play();
-                        });
-                      },
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.forward_10),
-                      onPressed: () => _controller!.seekTo(
-                        _controller!.value.position + const Duration(seconds: 10),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+      body: ColoredBox(
+        color: Colors.black,
+        child: Column(
+          children: [
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _errorMessage != null
+                      ? Center(
+                          child: _PlayerError(
+                            message: _errorMessage!,
+                            onRetry: _initializePlayer,
+                          ),
+                        )
+                      : _webViewController != null
+                          ? WebViewWidget(controller: _webViewController!)
+                          : Center(child: _buildVideo()),
             ),
+            if (!_loading && _errorMessage == null && _webViewController == null)
+              _buildControls(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVideo() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      return _PlayerError(
+        message: '播放器尚未准备好',
+        onRetry: _initializePlayer,
+      );
+    }
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (context, value, child) {
+        if (value.hasError) {
+          return _PlayerError(
+            message: '播放中断，请检查视频地址或网络后重试',
+            onRetry: _initializePlayer,
+          );
+        }
+        final ratio = value.aspectRatio;
+        return AspectRatio(
+          aspectRatio: ratio.isFinite && ratio > 0 ? ratio : 16 / 9,
+          child: VideoPlayer(controller),
+        );
+      },
+    );
+  }
+
+  Widget _buildControls() {
+    final controller = _controller!;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            VideoProgressIndicator(
+              controller,
+              allowScrubbing: true,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              colors: VideoProgressColors(
+                playedColor: Colors.amber,
+                bufferedColor: Colors.white38,
+                backgroundColor: Colors.white24,
+              ),
+            ),
+            ValueListenableBuilder<VideoPlayerValue>(
+              valueListenable: controller,
+              builder: (context, value, child) => Row(
+                children: [
+                  Text(
+                    '${_formatDuration(value.position)} / ${_formatDuration(value.duration)}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: '上一集',
+                    onPressed: _hasPreviousEpisode
+                        ? () => _openEpisode(widget.episodes[_episodeIndex - 1])
+                        : null,
+                    icon: const Icon(Icons.skip_previous),
+                  ),
+                  IconButton(
+                    tooltip: '下一集',
+                    onPressed: _hasNextEpisode
+                        ? () => _openEpisode(widget.episodes[_episodeIndex + 1])
+                        : null,
+                    icon: const Icon(Icons.skip_next),
+                  ),
+                ],
+              ),
+            ),
+            ValueListenableBuilder<VideoPlayerValue>(
+              valueListenable: controller,
+              builder: (context, value, child) => Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  IconButton(
+                    tooltip: '后退 10 秒',
+                    onPressed: () => _seekBy(const Duration(seconds: -10)),
+                    icon: const Icon(Icons.replay_10),
+                  ),
+                  IconButton.filled(
+                    tooltip: value.isPlaying ? '暂停' : '播放',
+                    onPressed: _togglePlayback,
+                    icon: Icon(value.isPlaying ? Icons.pause : Icons.play_arrow),
+                  ),
+                  IconButton(
+                    tooltip: '前进 10 秒',
+                    onPressed: () => _seekBy(const Duration(seconds: 10)),
+                    icon: const Icon(Icons.forward_10),
+                  ),
+                  PopupMenuButton<double>(
+                    tooltip: '播放速度',
+                    initialValue: _playbackSpeed,
+                    onSelected: (speed) async {
+                      await controller.setPlaybackSpeed(speed);
+                      if (mounted) setState(() => _playbackSpeed = speed);
+                    },
+                    itemBuilder: (context) => [
+                      for (final speed in [0.75, 1.0, 1.25, 1.5, 2.0])
+                        PopupMenuItem(
+                          value: speed,
+                          child: Text('${speed}×'),
+                        ),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('${_playbackSpeed}×'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
+class _PlayerError extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+
+  const _PlayerError({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline, color: Colors.white70, size: 40),
+          const SizedBox(height: 12),
+          Text(message, textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh),
+            label: const Text('重试'),
+          ),
+        ],
+      ),
+    );
+  }
+}
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
 
