@@ -43,7 +43,6 @@ class _HomePageState extends State<HomePage> {
   bool _isVIP = true;
 
   final List<String> _apiBases = [
-    'https://huangguoai.com',
     'https://ctb09.ir95e08v.cc',
   ];
 
